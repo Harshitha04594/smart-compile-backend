@@ -15,9 +15,11 @@ CORS(app)
 # --- AI CONFIGURATION ---
 AI_API_KEY = os.getenv("AI_API_KEY")
 if AI_API_KEY:
+    # Stable configuration for Google AI
     genai.configure(api_key=AI_API_KEY)
 
 # --- JUDGE0 CONFIGURATION ---
+# The URL must include base64_encoded=true so Judge0 decodes the code before running it
 JUDGE0_URL = "https://ce.judge0.com/submissions?wait=true&base64_encoded=true"
 
 JUDGE0_LANG_IDS = {
@@ -28,6 +30,7 @@ JUDGE0_LANG_IDS = {
 }
 
 def decode_judge0(b64_data):
+    """Safely decodes base64 output from Judge0."""
     if not b64_data: return ""
     try:
         return base64.b64decode(str(b64_data)).decode('utf-8')
@@ -36,21 +39,18 @@ def decode_judge0(b64_data):
 
 def ai_modify_code(code, language, task, level="easy", raw_error=""):
     if not AI_API_KEY: 
-        return "AI Error: API Key missing in backend environment."
+        return "AI Error: API Key missing in Render environment."
     
     try:
-        # FIX: Using the explicit model identifier to bypass 404 errors
-        # Some regions/SDK versions require the 'models/' prefix, some don't.
-        # We try the standard stable name first.
-        model_name = 'gemini-1.5-flash'
-        model = genai.GenerativeModel(model_name)
+        # Using Gemini 2.0 Flash
+        model = genai.GenerativeModel('gemini-2.0-flash')
         
         prompts = {
             "comment": f"Add professional inline comments to this {language} code. Return ONLY the code. No markdown formatting.",
             "format": f"Reformat this {language} code for clean style. Return ONLY the code. No markdown.",
             "explain": f"You are a computer science tutor for a {level} level student. Explain this error: {raw_error}. Code context: {code}",
-            "static_check": f"Perform a code review for this {language} code. Target level: {level}.",
-            "complexity": f"Analyze the Time and Space complexity of this {language} code for a {level} level student."
+            "static_check": f"Perform a professional code review for this {language} code at a {level} level.",
+            "complexity": f"Analyze the Time and Space complexity (Big O notation) of this {language} code for a {level} level student."
         }
         
         instruction = prompts.get(task, "Review this code.")
@@ -62,6 +62,7 @@ def ai_modify_code(code, language, task, level="easy", raw_error=""):
             return "AI Error: Model returned an empty response."
 
         res_text = response.text
+        # Clean up output (remove markdown code blocks)
         res_text = res_text.replace(f"```{language}", "").replace("```", "").strip()
         if res_text.startswith("```"):
              res_text = res_text.split("\n", 1)[-1].rsplit("\n", 1)[0]
@@ -69,7 +70,8 @@ def ai_modify_code(code, language, task, level="easy", raw_error=""):
         return res_text.strip()
 
     except Exception as e:
-        # Fallback: If 1.5-flash fails, the UI will show exactly why
+        if "429" in str(e):
+            return "AI Error 429: Gemini 2.0 Limit Reached. Wait 1 minute and try again."
         return f"AI Error: {str(e)}"
 
 @app.route("/run", methods=["POST"])
@@ -86,7 +88,9 @@ def run_code():
         return jsonify({'output': f"Error: Language '{lang_key}' is not supported."})
 
     try:
+        # Encode source code to base64 for Judge0
         source_base64 = base64.b64encode(code.encode('utf-8')).decode('utf-8')
+
         resp = requests.post(JUDGE0_URL, json={
             "source_code": source_base64,
             "language_id": lang_id
@@ -139,7 +143,7 @@ def format_code():
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "Online", "engine": "Judge0", "ai": "Gemini-1.5-Flash (Stable)"})
+    return jsonify({"status": "Online", "engine": "Judge0", "ai": "Gemini-2.0-Flash"})
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
