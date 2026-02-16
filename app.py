@@ -29,7 +29,7 @@ def ai_modify_code(code, language, task, level="easy", raw_error=""):
             "format": f"Format this {language} code. Return ONLY code.",
             "explain": f"Explain this error for a {level} student: {raw_error}. Code: {code}"
         }
-        # Using 1.5-flash for much higher daily limits
+        # Using 1.5-flash for higher stability
         response = client.models.generate_content(
             model='gemini-1.5-flash',
             contents=code if task != "explain" else prompts["explain"],
@@ -44,17 +44,14 @@ def run_code():
     data = request.json
     raw_lang = data.get("language", "python")
     lang_key = str(raw_lang).lower().strip()
-    code = data.get("code", "")
+    code = data.get("code", "").strip()
     
-    # --- LOGGING TO RENDER DASHBOARD ---
-    print(f"--- EXECUTION START ---")
-    print(f"Language: {lang_key}")
-    print(f"Code received (first 20 chars): {code[:20]}...")
-    print(f"--- --- ---")
+    if not code:
+        return jsonify({'output': "Error: The code editor is empty."})
 
     config = PISTON_CONFIG.get(lang_key)
     if not config:
-        return jsonify({'output': f"Error: Language '{raw_lang}' not supported."})
+        return jsonify({'output': f"Error: Language '{raw_lang}' is not supported."})
 
     try:
         resp = requests.post("https://emkc.org/api/v2/piston/execute", json={
@@ -64,29 +61,33 @@ def run_code():
         }, timeout=15)
         
         result = resp.json()
-        
-        # Log the raw Piston response to Render logs
-        print(f"RAW PISTON RESPONSE: {json.dumps(result)}")
-
         run_info = result.get('run', {})
-        compile_info = result.get('compile', {})
         
+        # AGGRESSIVE EXTRACTION
         stdout = run_info.get('stdout', '')
         stderr = run_info.get('stderr', '')
-        compile_err = compile_info.get('stderr', '')
+        combined_output = run_info.get('output', '') # This is usually where Piston hides the result
+        compile_err = result.get('compile', {}).get('stderr', '')
 
+        # 1. Check for compilation errors first
         if compile_err:
-            final_output = compile_err
-        elif stderr:
-            final_output = stderr
-        elif stdout:
-            final_output = stdout
-        else:
-            final_output = "Code executed successfully with no output."
+            return jsonify({'output': compile_err.strip()})
+        
+        # 2. Check for runtime errors
+        if stderr:
+            return jsonify({'output': stderr.strip()})
 
-        return jsonify({'output': final_output.strip(), 'raw_error': compile_err or stderr})
+        # 3. Check for stdout
+        if stdout and stdout.strip():
+            return jsonify({'output': stdout.strip()})
+
+        # 4. FALLBACK: Check the 'output' field if stdout was empty
+        if combined_output and combined_output.strip():
+            return jsonify({'output': combined_output.strip()})
+            
+        return jsonify({'output': "Code executed successfully with no output."})
+
     except Exception as e:
-        print(f"CRITICAL BACKEND ERROR: {str(e)}")
         return jsonify({'output': f"Backend Error: {str(e)}"})
 
 @app.route('/auto_comment', methods=['POST'])
