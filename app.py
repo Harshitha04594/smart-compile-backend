@@ -16,6 +16,7 @@ CORS(app)
 AI_API_KEY = os.getenv("AI_API_KEY")
 
 # --- JUDGE0 CONFIGURATION ---
+# The ?wait=true&base64_encoded=true ensures Judge0 handles the code properly
 JUDGE0_URL = "https://ce.judge0.com/submissions?wait=true&base64_encoded=true"
 
 JUDGE0_LANG_IDS = {
@@ -37,11 +38,10 @@ def ai_modify_code(code, language, task, level="easy", raw_error=""):
         return "AI Error: API Key missing in backend environment."
     
     try:
-        # Initialize the client (google-genai SDK)
+        # 1. Initialize the official google-genai client
         client = genai.Client(api_key=AI_API_KEY)
         
-        # Use 'gemini-1.5-flash' - do not add 'models/' prefix manually
-        # as the SDK handles this.
+        # 2. Use 'gemini-1.5-flash' - this is the stable production model
         model_id = 'gemini-1.5-flash'
         
         prompts = {
@@ -49,32 +49,30 @@ def ai_modify_code(code, language, task, level="easy", raw_error=""):
             "format": f"Reformat this {language} code for clean indentation and style. Return ONLY the code. No markdown.",
             "explain": f"You are a computer science tutor for a {level} level student. Explain this error: {raw_error}. Code context: {code}",
             "static_check": f"Conduct a professional code review for this {language} code. Target level: {level}. Suggest improvements.",
-            "complexity": f"Analyze the Time and Space complexity of this {language} code for a {level} level student."
+            "complexity": f"Analyze the Time and Space complexity (Big O notation) of this {language} code for a {level} level student."
         }
         
         instruction = prompts.get(task, "Review this code.")
         full_prompt = f"{instruction}\n\nCode:\n{code}"
 
-        # The 'generate_content' call for the google-genai SDK
+        # 3. Call the model
         response = client.models.generate_content(
             model=model_id,
             contents=full_prompt
         )
         
         if not response or not response.text:
-            return "AI Error: Received an empty response from Gemini."
+            return "AI Error: Model returned an empty response."
 
-        # Clean up any markdown code blocks
+        # 4. Clean up output (remove ```python or ``` blocks)
         res_text = response.text
         res_text = res_text.replace(f"```{language}", "").replace("```", "").strip()
-        # Some AIs just use ``` without the language name
         if res_text.startswith("```"):
              res_text = res_text.split("\n", 1)[-1].rsplit("\n", 1)[0]
              
         return res_text.strip()
 
     except Exception as e:
-        # Catch the 404 or any other API error
         return f"AI Error: {str(e)}"
 
 @app.route("/run", methods=["POST"])
@@ -91,7 +89,9 @@ def run_code():
         return jsonify({'output': f"Error: Language '{lang_key}' is not supported."})
 
     try:
+        # Encode source code to base64 for Judge0
         source_base64 = base64.b64encode(code.encode('utf-8')).decode('utf-8')
+
         resp = requests.post(JUDGE0_URL, json={
             "source_code": source_base64,
             "language_id": lang_id
