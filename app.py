@@ -27,12 +27,15 @@ def ai_modify_code(code, language, task, level="easy", raw_error=""):
         prompts = {
             "comment": f"Add comments to this {language} code. Return ONLY code.",
             "format": f"Format this {language} code. Return ONLY code.",
-            "explain": f"Explain this error for a {level} student: {raw_error}. Code: {code}"
+            "explain": f"Explain this error for a {level} student: {raw_error}. Code: {code}",
+            "review": f"Review this {language} code and suggest improvements.",
+            "complexity": f"Analyze the time and space complexity of this {language} code."
         }
-        # Using 1.5-flash for higher stability
+        
+        # Using 1.5-flash for 1,500 requests per day limit
         response = client.models.generate_content(
             model='gemini-1.5-flash',
-            contents=code if task != "explain" else prompts["explain"],
+            contents=code if task not in ["explain", "review", "complexity"] else prompts.get(task),
             config=genai.types.GenerateContentConfig(system_instruction=prompts.get(task, ""))
         )
         return response.text.replace(f"```{language}", "").replace("```", "").strip()
@@ -62,30 +65,27 @@ def run_code():
         
         result = resp.json()
         run_info = result.get('run', {})
+        compile_info = result.get('compile', {})
         
-        # AGGRESSIVE EXTRACTION
+        # AGGRESSIVE EXTRACTION: Check every possible field
         stdout = run_info.get('stdout', '')
         stderr = run_info.get('stderr', '')
-        combined_output = run_info.get('output', '') # This is usually where Piston hides the result
-        compile_err = result.get('compile', {}).get('stderr', '')
+        output_field = run_info.get('output', '') # Piston often puts combined output here
+        compile_err = compile_info.get('stderr', '')
 
-        # 1. Check for compilation errors first
-        if compile_err:
-            return jsonify({'output': compile_err.strip()})
-        
-        # 2. Check for runtime errors
-        if stderr:
-            return jsonify({'output': stderr.strip()})
+        # Determine what to show the user (Priority Order)
+        if compile_err and compile_err.strip():
+            final_output = compile_err
+        elif stderr and stderr.strip():
+            final_output = stderr
+        elif stdout and stdout.strip():
+            final_output = stdout
+        elif output_field and output_field.strip():
+            final_output = output_field
+        else:
+            final_output = "Code executed successfully with no print output."
 
-        # 3. Check for stdout
-        if stdout and stdout.strip():
-            return jsonify({'output': stdout.strip()})
-
-        # 4. FALLBACK: Check the 'output' field if stdout was empty
-        if combined_output and combined_output.strip():
-            return jsonify({'output': combined_output.strip()})
-            
-        return jsonify({'output': "Code executed successfully with no output."})
+        return jsonify({'output': final_output.strip(), 'raw_error': compile_err or stderr})
 
     except Exception as e:
         return jsonify({'output': f"Backend Error: {str(e)}"})
@@ -108,9 +108,21 @@ def explain():
     res = ai_modify_code(data.get("code"), data.get("language"), "explain", data.get("level"), data.get("raw_error"))
     return jsonify({"explanation": res})
 
+@app.route('/ai_review', methods=['POST'])
+def ai_review():
+    data = request.json
+    res = ai_modify_code(data.get("code"), data.get("language"), "review")
+    return jsonify({"output": res})
+
+@app.route('/complexity', methods=['POST'])
+def complexity():
+    data = request.json
+    res = ai_modify_code(data.get("code"), data.get("language"), "complexity")
+    return jsonify({"output": res})
+
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "Online"})
+    return jsonify({"status": "Online", "engine": "Piston + Gemini 1.5"})
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
