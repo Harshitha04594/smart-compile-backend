@@ -16,7 +16,7 @@ CORS(app)
 AI_API_KEY = os.getenv("AI_API_KEY")
 
 # --- JUDGE0 CONFIGURATION ---
-# The ?wait=true&base64_encoded=true ensures Judge0 handles the code properly
+# Base64 flag in URL is required so Judge0 decodes the source code before running
 JUDGE0_URL = "https://ce.judge0.com/submissions?wait=true&base64_encoded=true"
 
 JUDGE0_LANG_IDS = {
@@ -38,24 +38,24 @@ def ai_modify_code(code, language, task, level="easy", raw_error=""):
         return "AI Error: API Key missing in backend environment."
     
     try:
-        # 1. Initialize the official google-genai client
+        # Initializing the google-genai client
         client = genai.Client(api_key=AI_API_KEY)
         
-        # 2. Use 'gemini-1.5-flash' - this is the stable production model
-        model_id = 'gemini-1.5-flash'
+        # SWITCHED: Using Gemini 2.0 Flash as requested
+        model_id = 'gemini-2.0-flash'
         
         prompts = {
-            "comment": f"Add professional inline comments to this {language} code. Return ONLY the code. No markdown formatting.",
-            "format": f"Reformat this {language} code for clean indentation and style. Return ONLY the code. No markdown.",
-            "explain": f"You are a computer science tutor for a {level} level student. Explain this error: {raw_error}. Code context: {code}",
-            "static_check": f"Conduct a professional code review for this {language} code. Target level: {level}. Suggest improvements.",
-            "complexity": f"Analyze the Time and Space complexity (Big O notation) of this {language} code for a {level} level student."
+            "comment": f"Add professional inline comments to this {language} code. Return ONLY the code. No markdown.",
+            "format": f"Reformat this {language} code for clean style. Return ONLY the code. No markdown.",
+            "explain": f"You are a computer science tutor for a {level} level student. Explain this error: {raw_error}. Code: {code}",
+            "static_check": f"Perform a code review for this {language} code. Target level: {level}.",
+            "complexity": f"Analyze the Time and Space complexity of this {language} code for a {level} level student."
         }
         
         instruction = prompts.get(task, "Review this code.")
         full_prompt = f"{instruction}\n\nCode:\n{code}"
 
-        # 3. Call the model
+        # API Call using the google-genai SDK
         response = client.models.generate_content(
             model=model_id,
             contents=full_prompt
@@ -64,7 +64,7 @@ def ai_modify_code(code, language, task, level="easy", raw_error=""):
         if not response or not response.text:
             return "AI Error: Model returned an empty response."
 
-        # 4. Clean up output (remove ```python or ``` blocks)
+        # Clean up output (remove markdown blocks)
         res_text = response.text
         res_text = res_text.replace(f"```{language}", "").replace("```", "").strip()
         if res_text.startswith("```"):
@@ -89,7 +89,7 @@ def run_code():
         return jsonify({'output': f"Error: Language '{lang_key}' is not supported."})
 
     try:
-        # Encode source code to base64 for Judge0
+        # Base64 encode for secure transfer to Judge0
         source_base64 = base64.b64encode(code.encode('utf-8')).decode('utf-8')
 
         resp = requests.post(JUDGE0_URL, json={
@@ -144,7 +144,7 @@ def format_code():
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "Online", "engine": "Judge0", "ai": "google-genai-sdk"})
+    return jsonify({"status": "Online", "engine": "Judge0", "ai": "Gemini-2.0-Flash"})
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
