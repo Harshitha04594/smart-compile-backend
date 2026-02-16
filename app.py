@@ -13,6 +13,7 @@ CORS(app)
 
 AI_API_KEY = os.getenv("AI_API_KEY")
 
+# Mapping project languages to Piston API identifiers
 PISTON_CONFIG = {
     "python": {"language": "python", "version": "3.10.0"},
     "java": {"language": "java", "version": "15.0.2"},
@@ -20,110 +21,98 @@ PISTON_CONFIG = {
     "cpp": {"language": "cpp", "version": "10.2.0"}
 }
 
-# --- AI Utility Functions ---
-
-def get_ai_explanation(code, language, error_message, level):
-    if not AI_API_KEY: return "API Key missing."
-    try:
-        client = genai.Client(api_key=AI_API_KEY) 
-        prompts = {
-            'easy': "You are a friendly beginner tutor. Use simple analogies and provide fixed code.",
-            'medium': "You are an intermediate instructor. Provide hints and technical terms, not the full code.",
-            'hard': "You are a critical peer-reviewer. Use high-level jargon and minimal guidance."
-        }
-        system_prompt = prompts.get(level, "You are an expert programming tutor.")
-        response = client.models.generate_content(
-            model='gemini-2.5-flash', 
-            contents=f"Language: {language}\nCode: {code}\nError: {error_message}",
-            config=genai.types.GenerateContentConfig(system_instruction=system_prompt)
-        )
-        return response.text
-    except Exception as e:
-        return f"AI Error: {str(e)}"
-
-def run_ai_code_review(code, language, review_type, level):
-    if not AI_API_KEY: return "API Key missing."
-    try:
-        client = genai.Client(api_key=AI_API_KEY)
-        system_prompt = f"Analyze {language} code for {review_type} at a {level} level."
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=code,
-            config=genai.types.GenerateContentConfig(system_instruction=system_prompt)
-        )
-        return response.text
-    except Exception as e:
-        return f"AI Review Error: {str(e)}"
-
-def ai_modify_code(code, language, task):
-    if not AI_API_KEY: return code
+# --- AI Helper (Using stable 1.5-flash for higher limits) ---
+def ai_modify_code(code, language, task, level="easy", raw_error=""):
+    if not AI_API_KEY: return "AI Key missing in backend."
     try:
         client = genai.Client(api_key=AI_API_KEY)
         prompts = {
-            "comment": f"Add helpful comments to this {language} code. Return ONLY the code.",
-            "format": f"Reformat this {language} code for clean indentation. Return ONLY the code."
+            "comment": f"Add professional comments to this {language} code. Return ONLY code.",
+            "format": f"Reformat this {language} code for clean indentation. Return ONLY code.",
+            "explain": f"You are a {level} level tutor. Explain this error: {raw_error}. Code: {code}"
         }
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=code,
-            config=genai.types.GenerateContentConfig(system_instruction=prompts[task])
+            model='gemini-1.5-flash',
+            contents=code if task != "explain" else prompts["explain"],
+            config=genai.types.GenerateContentConfig(system_instruction=prompts.get(task, ""))
         )
-        # Clean up markdown code blocks
         return response.text.replace(f"```{language}", "").replace("```", "").strip()
-    except:
-        return code
+    except Exception as e:
+        return f"AI Error (Quota likely exceeded): {str(e)}"
 
-# --- Execution Engine ---
+# --- Execution Engine (Ultra-Robust) ---
 
 def execute_code_piston(language, code):
-    config = PISTON_CONFIG.get(language)
-    if not config: return "Unsupported language.", ""
+    # Fix: Convert "Python" to "python" to match config keys
+    lang_key = str(language).lower()
+    config = PISTON_CONFIG.get(lang_key)
+    
+    if not config:
+        return f"Error: Language '{language}' is not supported.", ""
+
+    payload = {
+        "language": config["language"],
+        "version": config["version"],
+        "files": [{"content": code}]
+    }
+
     try:
-        resp = requests.post("https://emkc.org/api/v2/piston/execute", json={
-            "language": config["language"], "version": config["version"], "files": [{"content": code}]
-        }, timeout=10)
+        resp = requests.post("https://emkc.org/api/v2/piston/execute", json=payload, timeout=10)
         data = resp.json()
-        stdout = data.get('run', {}).get('stdout', '')
-        stderr = (data.get('compile', {}).get('stderr', '') + "\n" + data.get('run', {}).get('stderr', '')).strip()
-        return stdout, stderr
+        
+        # Deep Extraction: Check all possible output locations in Piston response
+        run_data = data.get('run', {})
+        compile_data = data.get('compile', {})
+        
+        stdout = run_data.get('stdout', '')
+        stderr = run_data.get('stderr', '')
+        compile_err = compile_data.get('stderr', '')
+        combined = run_data.get('output', '')
+
+        # Priority: Compilation Error > Runtime Error > Standard Output
+        if compile_err:
+            return compile_err.strip(), compile_err.strip()
+        if stderr:
+            return stderr.strip(), stderr.strip()
+        if stdout:
+            return stdout.strip(), ""
+        if combined:
+            return combined.strip(), ""
+            
+        return "Code executed successfully (no output).", ""
     except Exception as e:
         return f"System Error: {str(e)}", str(e)
 
-# --- Endpoints (Matching your React code exactly) ---
+# --- API Endpoints ---
 
 @app.route("/run", methods=["POST"])
 def run_code():
     data = request.json
     output, raw_error = execute_code_piston(data.get("language"), data.get("code"))
+    # Always return 'output' key to match your React App.js
     return jsonify({'output': output, 'raw_error': raw_error})
 
-@app.route('/explain', methods=['POST'])
-def explain_error():
-    data = request.json
-    explanation = get_ai_explanation(data.get('code'), data.get('language'), data.get('raw_error'), data.get('level'))
-    return jsonify({"explanation": explanation})
-
-@app.route('/code_review', methods=['POST'])
-def code_review():
-    data = request.json
-    analysis = run_ai_code_review(data.get("code"), data.get("language"), data.get("review_type"), data.get('level'))
-    return jsonify({"output": analysis})
-
 @app.route('/auto_comment', methods=['POST'])
-def auto_comment_route():
+def auto_comment():
     data = request.json
-    modified_code = ai_modify_code(data.get("code"), data.get("language"), "comment")
-    return jsonify({"output": modified_code}) # Matches your setCode(data.output)
+    res = ai_modify_code(data.get("code"), data.get("language"), "comment")
+    return jsonify({"output": res})
 
 @app.route('/format_code', methods=['POST'])
-def format_code_route():
+def format_code():
     data = request.json
-    modified_code = ai_modify_code(data.get("code"), data.get("language"), "format")
-    return jsonify({"output": modified_code}) # Matches your setCode(data.output)
+    res = ai_modify_code(data.get("code"), data.get("language"), "format")
+    return jsonify({"output": res})
+
+@app.route('/explain', methods=['POST'])
+def explain():
+    data = request.json
+    res = ai_modify_code(data.get("code"), data.get("language"), "explain", data.get("level"), data.get("raw_error"))
+    return jsonify({"explanation": res})
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "Online"})
+    return jsonify({"status": "Online", "mode": "Free Tier (Piston)"})
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
