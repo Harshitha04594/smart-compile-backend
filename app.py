@@ -1,11 +1,11 @@
 import os
 import requests
+import json
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from google import genai
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
 
 app = Flask(__name__)
@@ -13,7 +13,6 @@ CORS(app)
 
 AI_API_KEY = os.getenv("AI_API_KEY")
 
-# Mapping project languages to Piston API identifiers
 PISTON_CONFIG = {
     "python": {"language": "python", "version": "3.10.0"},
     "java": {"language": "java", "version": "15.0.2"},
@@ -21,16 +20,16 @@ PISTON_CONFIG = {
     "cpp": {"language": "cpp", "version": "10.2.0"}
 }
 
-# --- AI Helper (Using stable 1.5-flash for higher limits) ---
 def ai_modify_code(code, language, task, level="easy", raw_error=""):
-    if not AI_API_KEY: return "AI Key missing in backend."
+    if not AI_API_KEY: return "AI Key missing."
     try:
         client = genai.Client(api_key=AI_API_KEY)
         prompts = {
-            "comment": f"Add professional comments to this {language} code. Return ONLY code.",
-            "format": f"Reformat this {language} code for clean indentation. Return ONLY code.",
-            "explain": f"You are a {level} level tutor. Explain this error: {raw_error}. Code: {code}"
+            "comment": f"Add comments to this {language} code. Return ONLY code.",
+            "format": f"Format this {language} code. Return ONLY code.",
+            "explain": f"Explain this error for a {level} student: {raw_error}. Code: {code}"
         }
+        # Using 1.5-flash for much higher daily limits
         response = client.models.generate_content(
             model='gemini-1.5-flash',
             contents=code if task != "explain" else prompts["explain"],
@@ -38,59 +37,57 @@ def ai_modify_code(code, language, task, level="easy", raw_error=""):
         )
         return response.text.replace(f"```{language}", "").replace("```", "").strip()
     except Exception as e:
-        return f"AI Error (Quota likely exceeded): {str(e)}"
-
-# --- Execution Engine (Ultra-Robust) ---
-
-def execute_code_piston(language, code):
-    # Fix: Convert "Python" to "python" to match config keys
-    lang_key = str(language).lower()
-    config = PISTON_CONFIG.get(lang_key)
-    
-    if not config:
-        return f"Error: Language '{language}' is not supported.", ""
-
-    payload = {
-        "language": config["language"],
-        "version": config["version"],
-        "files": [{"content": code}]
-    }
-
-    try:
-        resp = requests.post("https://emkc.org/api/v2/piston/execute", json=payload, timeout=10)
-        data = resp.json()
-        
-        # Deep Extraction: Check all possible output locations in Piston response
-        run_data = data.get('run', {})
-        compile_data = data.get('compile', {})
-        
-        stdout = run_data.get('stdout', '')
-        stderr = run_data.get('stderr', '')
-        compile_err = compile_data.get('stderr', '')
-        combined = run_data.get('output', '')
-
-        # Priority: Compilation Error > Runtime Error > Standard Output
-        if compile_err:
-            return compile_err.strip(), compile_err.strip()
-        if stderr:
-            return stderr.strip(), stderr.strip()
-        if stdout:
-            return stdout.strip(), ""
-        if combined:
-            return combined.strip(), ""
-            
-        return "Code executed successfully (no output).", ""
-    except Exception as e:
-        return f"System Error: {str(e)}", str(e)
-
-# --- API Endpoints ---
+        return f"AI Error (Quota likely reached): {str(e)}"
 
 @app.route("/run", methods=["POST"])
 def run_code():
     data = request.json
-    output, raw_error = execute_code_piston(data.get("language"), data.get("code"))
-    # Always return 'output' key to match your React App.js
-    return jsonify({'output': output, 'raw_error': raw_error})
+    raw_lang = data.get("language", "python")
+    lang_key = str(raw_lang).lower().strip()
+    code = data.get("code", "")
+    
+    # --- LOGGING TO RENDER DASHBOARD ---
+    print(f"--- EXECUTION START ---")
+    print(f"Language: {lang_key}")
+    print(f"Code received (first 20 chars): {code[:20]}...")
+    print(f"--- --- ---")
+
+    config = PISTON_CONFIG.get(lang_key)
+    if not config:
+        return jsonify({'output': f"Error: Language '{raw_lang}' not supported."})
+
+    try:
+        resp = requests.post("https://emkc.org/api/v2/piston/execute", json={
+            "language": config["language"],
+            "version": config["version"],
+            "files": [{"content": code}]
+        }, timeout=15)
+        
+        result = resp.json()
+        
+        # Log the raw Piston response to Render logs
+        print(f"RAW PISTON RESPONSE: {json.dumps(result)}")
+
+        run_info = result.get('run', {})
+        compile_info = result.get('compile', {})
+        
+        stdout = run_info.get('stdout', '')
+        stderr = run_info.get('stderr', '')
+        compile_err = compile_info.get('stderr', '')
+
+        if compile_err:
+            final_output = compile_err
+        elif stderr:
+            final_output = stderr
+        elif stdout:
+            final_output = stdout
+        else:
+            final_output = "Code executed successfully with no output."
+
+        return jsonify({'output': final_output.strip(), 'raw_error': compile_err or stderr})
+    except Exception as e:
+        print(f"CRITICAL BACKEND ERROR: {str(e)}")
+        return jsonify({'output': f"Backend Error: {str(e)}"})
 
 @app.route('/auto_comment', methods=['POST'])
 def auto_comment():
@@ -112,7 +109,7 @@ def explain():
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "Online", "mode": "Free Tier (Piston)"})
+    return jsonify({"status": "Online"})
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
