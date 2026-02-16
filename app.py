@@ -17,7 +17,7 @@ AI_API_KEY = os.getenv("AI_API_KEY")
 # --- JUDGE0 CONFIGURATION ---
 JUDGE0_URL = "https://ce.judge0.com/submissions?wait=true"
 
-# Refined Language IDs
+# Refined Language IDs for Judge0
 JUDGE0_LANG_IDS = {
     "python": 71, 
     "java": 62,   
@@ -25,14 +25,19 @@ JUDGE0_LANG_IDS = {
     "cpp": 54     
 }
 
-def decode_output(b64_str):
-    """Safely decodes Judge0 base64 responses."""
-    if not b64_str: return ""
+def decode_judge0(b64_data):
+    """
+    Universally decodes any base64 data returned by Judge0.
+    Judge0 encodes stdout, stderr, and compile_output.
+    """
+    if not b64_data:
+        return ""
     try:
-        # Judge0 sends results as base64 strings
-        return base64.b64decode(b64_str).decode('utf-8')
+        # Decode base64 to bytes, then bytes to utf-8 string
+        return base64.b64decode(str(b64_data)).decode('utf-8')
     except Exception:
-        return str(b64_str)
+        # Fallback if it's already plain text
+        return str(b64_data)
 
 def ai_modify_code(code, language, task, level="easy", raw_error=""):
     if not AI_API_KEY: return "AI Key missing."
@@ -41,9 +46,9 @@ def ai_modify_code(code, language, task, level="easy", raw_error=""):
         prompts = {
             "comment": f"Add comments to this {language} code. Return ONLY code.",
             "format": f"Format this {language} code. Return ONLY code.",
-            "explain": f"Explain this error for a {level} student: {raw_error}. Code: {code}",
+            "explain": f"You are a computer science tutor for a {level} level student. Explain this error: {raw_error}. Code: {code}",
             "static_check": f"Review this {language} code for a {level} student.",
-            "complexity": f"Analyze complexity of this {language} code."
+            "complexity": f"Analyze complexity of this {language} code for a {level} student."
         }
         response = client.models.generate_content(
             model='gemini-1.5-flash',
@@ -66,12 +71,13 @@ def run_code():
 
     lang_id = JUDGE0_LANG_IDS.get(lang_key)
     if not lang_id:
-        return jsonify({'output': f"Error: Language '{raw_lang}' not supported."})
+        return jsonify({'output': f"Error: Language '{raw_lang}' is not supported."})
 
     try:
-        # Encode source code to Base64 for Judge0
+        # 1. Encode your code to base64 so Judge0 can read it safely
         source_base64 = base64.b64encode(code.encode('utf-8')).decode('utf-8')
 
+        # 2. Call Judge0
         resp = requests.post(JUDGE0_URL, json={
             "source_code": source_base64,
             "language_id": lang_id,
@@ -79,32 +85,33 @@ def run_code():
         }, timeout=20)
         
         result = resp.json()
-        status = result.get('status', {}).get('description', 'Unknown')
         
-        # Decode all potential output fields
-        stdout = decode_output(result.get('stdout'))
-        stderr = decode_output(result.get('stderr'))
-        compile_out = decode_output(result.get('compile_output'))
+        # 3. DECODE EVERYTHING from Judge0
+        stdout = decode_judge0(result.get('stdout'))
+        stderr = decode_judge0(result.get('stderr'))
+        compile_out = decode_judge0(result.get('compile_output'))
+        message = decode_judge0(result.get('message'))
+        status = result.get('status', {}).get('description', 'Unknown')
 
-        # Build the user-facing output
+        # 4. Build the user-friendly output
         if status == "Accepted":
             final_output = stdout if stdout else "Code executed successfully (no output)."
-            err_for_ai = ""
+            raw_err = ""
         elif status == "Compilation Error":
             final_output = f"Compilation Error:\n{compile_out}"
-            err_for_ai = compile_out
-        elif "Runtime Error" in status:
-            # This fixes the 'base64' string issue in your screenshot
-            final_output = f"Runtime Error:\n{stderr}"
-            err_for_ai = stderr
+            raw_err = compile_out
+        elif "Runtime Error" in status or "NZEC" in status:
+            # We combine message and stderr to give full context
+            final_output = f"Runtime Error ({status}):\n{message}\n{stderr}"
+            raw_err = f"{message}\n{stderr}"
         else:
-            final_output = f"Status: {status}\n{stderr}"
-            err_for_ai = stderr
+            final_output = f"Status: {status}\n{message}\n{stderr}"
+            raw_err = stderr
 
-        return jsonify({'output': final_output, 'raw_error': err_for_ai})
+        return jsonify({'output': final_output.strip(), 'raw_error': raw_err.strip()})
 
     except Exception as e:
-        return jsonify({'output': f"Execution Failed: {str(e)}"})
+        return jsonify({'output': f"Backend Error: {str(e)}"})
 
 @app.route('/code_review', methods=['POST'])
 def code_review():
@@ -132,7 +139,7 @@ def format_code():
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "Online", "engine": "Judge0"})
+    return jsonify({"status": "Online", "engine": "Judge0 (Fully Decoded)"})
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
