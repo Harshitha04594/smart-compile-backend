@@ -16,7 +16,6 @@ CORS(app)
 AI_API_KEY = os.getenv("AI_API_KEY")
 
 # --- JUDGE0 CONFIGURATION ---
-# Base64 flag in URL is required so Judge0 decodes the source code before running
 JUDGE0_URL = "https://ce.judge0.com/submissions?wait=true&base64_encoded=true"
 
 JUDGE0_LANG_IDS = {
@@ -38,11 +37,10 @@ def ai_modify_code(code, language, task, level="easy", raw_error=""):
         return "AI Error: API Key missing in backend environment."
     
     try:
-        # Initializing the google-genai client
         client = genai.Client(api_key=AI_API_KEY)
         
-        # SWITCHED: Using Gemini 2.0 Flash as requested
-        model_id = 'gemini-2.0-flash'
+        # STABLE FIX: Using gemini-1.5-flash for 1,500 free requests per day
+        model_id = 'gemini-1.5-flash'
         
         prompts = {
             "comment": f"Add professional inline comments to this {language} code. Return ONLY the code. No markdown.",
@@ -55,7 +53,6 @@ def ai_modify_code(code, language, task, level="easy", raw_error=""):
         instruction = prompts.get(task, "Review this code.")
         full_prompt = f"{instruction}\n\nCode:\n{code}"
 
-        # API Call using the google-genai SDK
         response = client.models.generate_content(
             model=model_id,
             contents=full_prompt
@@ -64,7 +61,6 @@ def ai_modify_code(code, language, task, level="easy", raw_error=""):
         if not response or not response.text:
             return "AI Error: Model returned an empty response."
 
-        # Clean up output (remove markdown blocks)
         res_text = response.text
         res_text = res_text.replace(f"```{language}", "").replace("```", "").strip()
         if res_text.startswith("```"):
@@ -73,6 +69,8 @@ def ai_modify_code(code, language, task, level="easy", raw_error=""):
         return res_text.strip()
 
     except Exception as e:
+        if "429" in str(e):
+            return "AI is busy (Rate Limit). Please wait 10 seconds and try again."
         return f"AI Error: {str(e)}"
 
 @app.route("/run", methods=["POST"])
@@ -89,9 +87,7 @@ def run_code():
         return jsonify({'output': f"Error: Language '{lang_key}' is not supported."})
 
     try:
-        # Base64 encode for secure transfer to Judge0
         source_base64 = base64.b64encode(code.encode('utf-8')).decode('utf-8')
-
         resp = requests.post(JUDGE0_URL, json={
             "source_code": source_base64,
             "language_id": lang_id
@@ -144,7 +140,7 @@ def format_code():
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "Online", "engine": "Judge0", "ai": "Gemini-2.0-Flash"})
+    return jsonify({"status": "Online", "engine": "Judge0", "ai": "Gemini-1.5-Flash (High Quota)"})
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
