@@ -4,7 +4,7 @@ import json
 import base64
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from google import genai
+import google.generativeai as genai
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -14,6 +14,9 @@ CORS(app)
 
 # --- AI CONFIGURATION ---
 AI_API_KEY = os.getenv("AI_API_KEY")
+if AI_API_KEY:
+    # Use the stable configuration method
+    genai.configure(api_key=AI_API_KEY)
 
 # --- JUDGE0 CONFIGURATION ---
 JUDGE0_URL = "https://ce.judge0.com/submissions?wait=true&base64_encoded=true"
@@ -37,15 +40,13 @@ def ai_modify_code(code, language, task, level="easy", raw_error=""):
         return "AI Error: API Key missing in backend environment."
     
     try:
-        client = genai.Client(api_key=AI_API_KEY)
-        
-        # STABLE FIX: Using gemini-1.5-flash for 1,500 free requests per day
-        model_id = 'gemini-1.5-flash'
+        # Use the stable GenerativeModel interface
+        model = genai.GenerativeModel('gemini-1.5-flash')
         
         prompts = {
-            "comment": f"Add professional inline comments to this {language} code. Return ONLY the code. No markdown.",
+            "comment": f"Add professional inline comments to this {language} code. Return ONLY the code. No markdown formatting.",
             "format": f"Reformat this {language} code for clean style. Return ONLY the code. No markdown.",
-            "explain": f"You are a computer science tutor for a {level} level student. Explain this error: {raw_error}. Code: {code}",
+            "explain": f"You are a computer science tutor for a {level} level student. Explain this error: {raw_error}. Code context: {code}",
             "static_check": f"Perform a code review for this {language} code. Target level: {level}.",
             "complexity": f"Analyze the Time and Space complexity of this {language} code for a {level} level student."
         }
@@ -53,15 +54,14 @@ def ai_modify_code(code, language, task, level="easy", raw_error=""):
         instruction = prompts.get(task, "Review this code.")
         full_prompt = f"{instruction}\n\nCode:\n{code}"
 
-        response = client.models.generate_content(
-            model=model_id,
-            contents=full_prompt
-        )
+        # Standard generate_content call
+        response = model.generate_content(full_prompt)
         
         if not response or not response.text:
             return "AI Error: Model returned an empty response."
 
         res_text = response.text
+        # Clean up output (remove markdown blocks)
         res_text = res_text.replace(f"```{language}", "").replace("```", "").strip()
         if res_text.startswith("```"):
              res_text = res_text.split("\n", 1)[-1].rsplit("\n", 1)[0]
@@ -140,7 +140,7 @@ def format_code():
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "Online", "engine": "Judge0", "ai": "Gemini-1.5-Flash (High Quota)"})
+    return jsonify({"status": "Online", "engine": "Judge0", "ai": "Gemini-1.5-Flash (Stable)"})
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
