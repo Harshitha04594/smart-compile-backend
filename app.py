@@ -12,10 +12,10 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app) 
 
+# --- AI CONFIGURATION ---
 AI_API_KEY = os.getenv("AI_API_KEY")
 
 # --- JUDGE0 CONFIGURATION ---
-# CRITICAL FIX: base64_encoded=true MUST be in the URL for Judge0 to decode the source code
 JUDGE0_URL = "https://ce.judge0.com/submissions?wait=true&base64_encoded=true"
 
 JUDGE0_LANG_IDS = {
@@ -26,40 +26,61 @@ JUDGE0_LANG_IDS = {
 }
 
 def decode_judge0(b64_data):
-    """Safely decodes base64 data from Judge0 results."""
-    if not b64_data:
-        return ""
+    if not b64_data: return ""
     try:
         return base64.b64decode(str(b64_data)).decode('utf-8')
-    except Exception:
+    except:
         return str(b64_data)
 
 def ai_modify_code(code, language, task, level="easy", raw_error=""):
-    if not AI_API_KEY: return "AI Key missing."
+    if not AI_API_KEY: 
+        return "AI Error: API Key missing in backend environment."
+    
     try:
+        # Initialize the client (google-genai SDK)
         client = genai.Client(api_key=AI_API_KEY)
+        
+        # Use 'gemini-1.5-flash' - do not add 'models/' prefix manually
+        # as the SDK handles this.
+        model_id = 'gemini-1.5-flash'
+        
         prompts = {
-            "comment": f"Add comments to this {language} code. Return ONLY code.",
-            "format": f"Format this {language} code. Return ONLY code.",
-            "explain": f"You are a computer science tutor for a {level} level student. Explain this error: {raw_error}. Code: {code}",
-            "static_check": f"Review this {language} code for a {level} student.",
-            "complexity": f"Analyze complexity of this {language} code for a {level} student."
+            "comment": f"Add professional inline comments to this {language} code. Return ONLY the code. No markdown formatting.",
+            "format": f"Reformat this {language} code for clean indentation and style. Return ONLY the code. No markdown.",
+            "explain": f"You are a computer science tutor for a {level} level student. Explain this error: {raw_error}. Code context: {code}",
+            "static_check": f"Conduct a professional code review for this {language} code. Target level: {level}. Suggest improvements.",
+            "complexity": f"Analyze the Time and Space complexity of this {language} code for a {level} level student."
         }
-        # Use gemini-1.5-flash for 1,500 free requests per day
+        
+        instruction = prompts.get(task, "Review this code.")
+        full_prompt = f"{instruction}\n\nCode:\n{code}"
+
+        # The 'generate_content' call for the google-genai SDK
         response = client.models.generate_content(
-            model='gemini-1.5-flash',
-            contents=code if task not in ["explain", "static_check", "complexity"] else prompts.get(task),
-            config=genai.types.GenerateContentConfig(system_instruction=prompts.get(task, ""))
+            model=model_id,
+            contents=full_prompt
         )
-        return response.text.replace(f"```{language}", "").replace("```", "").strip()
+        
+        if not response or not response.text:
+            return "AI Error: Received an empty response from Gemini."
+
+        # Clean up any markdown code blocks
+        res_text = response.text
+        res_text = res_text.replace(f"```{language}", "").replace("```", "").strip()
+        # Some AIs just use ``` without the language name
+        if res_text.startswith("```"):
+             res_text = res_text.split("\n", 1)[-1].rsplit("\n", 1)[0]
+             
+        return res_text.strip()
+
     except Exception as e:
+        # Catch the 404 or any other API error
         return f"AI Error: {str(e)}"
 
 @app.route("/run", methods=["POST"])
 def run_code():
     data = request.json
-    raw_lang = data.get("language", "python")
-    lang_key = str(raw_lang).lower().strip()
+    lang_key = str(data.get("language", "python")).lower().strip()
     code = data.get("code", "").strip()
     
     if not code:
@@ -67,51 +88,40 @@ def run_code():
 
     lang_id = JUDGE0_LANG_IDS.get(lang_key)
     if not lang_id:
-        return jsonify({'output': f"Error: Language '{raw_lang}' is not supported."})
+        return jsonify({'output': f"Error: Language '{lang_key}' is not supported."})
 
     try:
-        # Encode source code to base64
         source_base64 = base64.b64encode(code.encode('utf-8')).decode('utf-8')
-
-        # Send to Judge0
         resp = requests.post(JUDGE0_URL, json={
             "source_code": source_base64,
             "language_id": lang_id
         }, timeout=20)
         
         result = resp.json()
-        
-        # Decode all potential output fields
         stdout = decode_judge0(result.get('stdout'))
         stderr = decode_judge0(result.get('stderr'))
         compile_out = decode_judge0(result.get('compile_output'))
-        message = decode_judge0(result.get('message'))
         status = result.get('status', {}).get('description', 'Unknown')
 
-        # Logic to choose what to display
         if status == "Accepted":
             final_output = stdout if stdout else "Code executed successfully (no output)."
             raw_err = ""
         elif status == "Compilation Error":
             final_output = f"Compilation Error:\n{compile_out}"
             raw_err = compile_out
-        elif "Runtime Error" in status or "NZEC" in status:
-            # We strip out the internal message to keep it clean
-            final_output = f"Runtime Error:\n{stderr if stderr else message}"
-            raw_err = f"{message}\n{stderr}"
         else:
-            final_output = f"Status: {status}\n{stderr if stderr else message}"
+            final_output = f"Error ({status}):\n{stderr}"
             raw_err = stderr
 
         return jsonify({'output': final_output.strip(), 'raw_error': raw_err.strip()})
-
     except Exception as e:
         return jsonify({'output': f"Backend Error: {str(e)}"})
 
 @app.route('/code_review', methods=['POST'])
 def code_review():
     data = request.json
-    res = ai_modify_code(data.get("code"), data.get("language"), data.get("review_type", "static_check"), data.get("level", "easy"))
+    task = data.get("review_type", "static_check")
+    res = ai_modify_code(data.get("code"), data.get("language"), task, data.get("level", "easy"))
     return jsonify({"output": res})
 
 @app.route('/explain', methods=['POST'])
@@ -134,7 +144,7 @@ def format_code():
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "Online", "engine": "Judge0 (Full Base64 Sync)"})
+    return jsonify({"status": "Online", "engine": "Judge0", "ai": "google-genai-sdk"})
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
