@@ -15,9 +15,9 @@ CORS(app)
 AI_API_KEY = os.getenv("AI_API_KEY")
 
 # --- JUDGE0 CONFIGURATION ---
-JUDGE0_URL = "https://ce.judge0.com/submissions?wait=true"
+# CRITICAL FIX: base64_encoded=true MUST be in the URL for Judge0 to decode the source code
+JUDGE0_URL = "https://ce.judge0.com/submissions?wait=true&base64_encoded=true"
 
-# Refined Language IDs for Judge0
 JUDGE0_LANG_IDS = {
     "python": 71, 
     "java": 62,   
@@ -26,17 +26,12 @@ JUDGE0_LANG_IDS = {
 }
 
 def decode_judge0(b64_data):
-    """
-    Universally decodes any base64 data returned by Judge0.
-    Judge0 encodes stdout, stderr, and compile_output.
-    """
+    """Safely decodes base64 data from Judge0 results."""
     if not b64_data:
         return ""
     try:
-        # Decode base64 to bytes, then bytes to utf-8 string
         return base64.b64decode(str(b64_data)).decode('utf-8')
     except Exception:
-        # Fallback if it's already plain text
         return str(b64_data)
 
 def ai_modify_code(code, language, task, level="easy", raw_error=""):
@@ -50,6 +45,7 @@ def ai_modify_code(code, language, task, level="easy", raw_error=""):
             "static_check": f"Review this {language} code for a {level} student.",
             "complexity": f"Analyze complexity of this {language} code for a {level} student."
         }
+        # Use gemini-1.5-flash for 1,500 free requests per day
         response = client.models.generate_content(
             model='gemini-1.5-flash',
             contents=code if task not in ["explain", "static_check", "complexity"] else prompts.get(task),
@@ -74,26 +70,25 @@ def run_code():
         return jsonify({'output': f"Error: Language '{raw_lang}' is not supported."})
 
     try:
-        # 1. Encode your code to base64 so Judge0 can read it safely
+        # Encode source code to base64
         source_base64 = base64.b64encode(code.encode('utf-8')).decode('utf-8')
 
-        # 2. Call Judge0
+        # Send to Judge0
         resp = requests.post(JUDGE0_URL, json={
             "source_code": source_base64,
-            "language_id": lang_id,
-            "base64_encoded": True
+            "language_id": lang_id
         }, timeout=20)
         
         result = resp.json()
         
-        # 3. DECODE EVERYTHING from Judge0
+        # Decode all potential output fields
         stdout = decode_judge0(result.get('stdout'))
         stderr = decode_judge0(result.get('stderr'))
         compile_out = decode_judge0(result.get('compile_output'))
         message = decode_judge0(result.get('message'))
         status = result.get('status', {}).get('description', 'Unknown')
 
-        # 4. Build the user-friendly output
+        # Logic to choose what to display
         if status == "Accepted":
             final_output = stdout if stdout else "Code executed successfully (no output)."
             raw_err = ""
@@ -101,11 +96,11 @@ def run_code():
             final_output = f"Compilation Error:\n{compile_out}"
             raw_err = compile_out
         elif "Runtime Error" in status or "NZEC" in status:
-            # We combine message and stderr to give full context
-            final_output = f"Runtime Error ({status}):\n{message}\n{stderr}"
+            # We strip out the internal message to keep it clean
+            final_output = f"Runtime Error:\n{stderr if stderr else message}"
             raw_err = f"{message}\n{stderr}"
         else:
-            final_output = f"Status: {status}\n{message}\n{stderr}"
+            final_output = f"Status: {status}\n{stderr if stderr else message}"
             raw_err = stderr
 
         return jsonify({'output': final_output.strip(), 'raw_error': raw_err.strip()})
@@ -139,7 +134,7 @@ def format_code():
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "Online", "engine": "Judge0 (Fully Decoded)"})
+    return jsonify({"status": "Online", "engine": "Judge0 (Full Base64 Sync)"})
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
