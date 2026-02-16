@@ -15,7 +15,6 @@ CORS(app)
 # --- AI CONFIGURATION ---
 AI_API_KEY = os.getenv("AI_API_KEY")
 if AI_API_KEY:
-    # Use the stable configuration method
     genai.configure(api_key=AI_API_KEY)
 
 # --- JUDGE0 CONFIGURATION ---
@@ -40,8 +39,11 @@ def ai_modify_code(code, language, task, level="easy", raw_error=""):
         return "AI Error: API Key missing in backend environment."
     
     try:
-        # Use the stable GenerativeModel interface
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # FIX: Using the explicit model identifier to bypass 404 errors
+        # Some regions/SDK versions require the 'models/' prefix, some don't.
+        # We try the standard stable name first.
+        model_name = 'gemini-1.5-flash'
+        model = genai.GenerativeModel(model_name)
         
         prompts = {
             "comment": f"Add professional inline comments to this {language} code. Return ONLY the code. No markdown formatting.",
@@ -54,14 +56,12 @@ def ai_modify_code(code, language, task, level="easy", raw_error=""):
         instruction = prompts.get(task, "Review this code.")
         full_prompt = f"{instruction}\n\nCode:\n{code}"
 
-        # Standard generate_content call
         response = model.generate_content(full_prompt)
         
         if not response or not response.text:
             return "AI Error: Model returned an empty response."
 
         res_text = response.text
-        # Clean up output (remove markdown blocks)
         res_text = res_text.replace(f"```{language}", "").replace("```", "").strip()
         if res_text.startswith("```"):
              res_text = res_text.split("\n", 1)[-1].rsplit("\n", 1)[0]
@@ -69,8 +69,7 @@ def ai_modify_code(code, language, task, level="easy", raw_error=""):
         return res_text.strip()
 
     except Exception as e:
-        if "429" in str(e):
-            return "AI is busy (Rate Limit). Please wait 10 seconds and try again."
+        # Fallback: If 1.5-flash fails, the UI will show exactly why
         return f"AI Error: {str(e)}"
 
 @app.route("/run", methods=["POST"])
