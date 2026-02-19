@@ -36,7 +36,7 @@ def ai_modify_code(code, language, task, level="easy", raw_error=""):
     
     # 2026 Active Model IDs
     models_to_try = [ 
-        'gemini-2.0-flash' 
+        'gemini-2.5-flash-lite' 
     ]
     
     prompts = {
