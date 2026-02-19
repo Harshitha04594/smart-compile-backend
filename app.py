@@ -35,10 +35,8 @@ def ai_modify_code(code, language, task, level="easy", raw_error=""):
         return "AI Error: API Key missing or Client not initialized."
     
     # 2026 Active Model IDs
-    models_to_try = [
-        'gemini-3-flash-preview',  # Fastest, newest
-        'gemini-flash-latest',     # Auto-points to stable
-        'gemini-2.5-flash'         # Production workhorse
+    models_to_try = [ 
+        'gemini-2.0-flash' 
     ]
     
     prompts = {
