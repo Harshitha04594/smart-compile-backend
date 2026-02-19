@@ -35,7 +35,10 @@ def ai_modify_code(code, language, task, level="easy", raw_error=""):
     
     # We try these model names in order. 
     # 'gemini-1.5-flash' is the most stable fallback.
-    models_to_try = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-flash-latest']
+    models_to_try = ['gemini-3-flash-preview',  # The current state-of-the-art Flash model
+    'gemini-flash-latest',     # Automatically points to the newest stable Flash
+    'gemini-2.5-flash',        # The current high-reliability stable version
+    'gemini-3-pro-preview']
     
     prompts = {
         "comment": f"Add professional inline comments to this {language} code. Return ONLY the code. No markdown.",
