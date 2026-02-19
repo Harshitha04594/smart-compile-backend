@@ -2,22 +2,23 @@ import os
 import requests
 import json
 import base64
-import time
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import google.generativeai as genai
-from google.api_core import exceptions
+from google import genai  # Use the new 2026 unified SDK
 from dotenv import load_dotenv
 
 load_dotenv()
 
 app = Flask(__name__)
+# Explicitly allowing CORS is essential to prevent "Failed to fetch" on the frontend
 CORS(app) 
 
 AI_API_KEY = os.getenv("AI_API_KEY")
 
+# Initialize the new 2026 Client
+client = None
 if AI_API_KEY:
-    genai.configure(api_key=AI_API_KEY)
+    client = genai.Client(api_key=AI_API_KEY)
 
 JUDGE0_URL = "https://ce.judge0.com/submissions?wait=true&base64_encoded=true"
 JUDGE0_LANG_IDS = {"python": 71, "java": 62, "c": 50, "cpp": 54}
@@ -30,15 +31,15 @@ def decode_judge0(b64_data):
         return str(b64_data)
 
 def ai_modify_code(code, language, task, level="easy", raw_error=""):
-    if not AI_API_KEY: 
-        return "AI Error: API Key missing in environment variables."
+    if not client: 
+        return "AI Error: API Key missing or Client not initialized."
     
-    # We try these model names in order. 
-    # 'gemini-1.5-flash' is the most stable fallback.
-    models_to_try = ['gemini-3-flash-preview',  # The current state-of-the-art Flash model
-    'gemini-flash-latest',     # Automatically points to the newest stable Flash
-    'gemini-2.5-flash',        # The current high-reliability stable version
-    'gemini-3-pro-preview']
+    # 2026 Active Model IDs
+    models_to_try = [
+        'gemini-3-flash-preview',  # Fastest, newest
+        'gemini-flash-latest',     # Auto-points to stable
+        'gemini-2.5-flash'         # Production workhorse
+    ]
     
     prompts = {
         "comment": f"Add professional inline comments to this {language} code. Return ONLY the code. No markdown.",
@@ -54,29 +55,23 @@ def ai_modify_code(code, language, task, level="easy", raw_error=""):
     last_error = ""
     for model_name in models_to_try:
         try:
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(full_prompt)
+            # New 2026 SDK Syntax
+            response = client.models.generate_content(
+                model=model_name,
+                contents=full_prompt
+            )
             
             if response and response.text:
-                # Success! Clean up the response
                 res_text = response.text
+                # Clean up markdown formatting if the AI includes it
                 res_text = res_text.replace(f"```{language}", "").replace("```", "").strip()
-                if res_text.startswith("```"):
-                     res_text = res_text.split("\n", 1)[-1].rsplit("\n", 1)[0]
-                return res_text.strip()
+                return res_text
         
-        except exceptions.ResourceExhausted:
-            # 429 Error: Try the next model in the list
-            continue 
-        except exceptions.NotFound:
-            # 404 Error: Model name might be slightly different, try next
-            last_error = f"Model {model_name} not found."
-            continue
         except Exception as e:
             last_error = str(e)
             continue
 
-    return f"AI Error: Could not connect to any Gemini models. Last error: {last_error}"
+    return f"AI Error: Connection failed. Last error: {last_error}"
 
 @app.route("/run", methods=["POST"])
 def run_code():
@@ -141,7 +136,7 @@ def format_code():
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "Active", "engine": "Judge0", "ai": "Gemini Multi-Tier Ready"})
+    return jsonify({"status": "Active", "engine": "Judge0", "ai": "Gemini 3 Ready"})
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
